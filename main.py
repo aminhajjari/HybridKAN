@@ -889,8 +889,8 @@ best_val_acc, best_accuracy, best_auc, best_epoch = 0.0, 0.0, 0.0, 0
 
 for epoch in range(1, EPOCH + 1):
     train_loss = train(cae, train_synchronized_loader, optimizer, epoch)
-    val = evaluate(cae, val_synchronized_loader)
-    key = (val['fused_acc'], -val['loss'])      # val accuracy, ties broken by val loss
+    val = evaluate(cae, val_synchronized_loader, with_auc=False)
+    key = (val['fused_acc'], -val['fused_ce'])      # val accuracy, ties broken by fused cross-entropy
     if key > best_key:
         best_key, best_epoch, best_val_acc = key, epoch, val['fused_acc']
         t = evaluate(cae, test_synchronized_loader)   # test is only read, never used to choose
