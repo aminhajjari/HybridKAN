@@ -710,7 +710,7 @@ def _auc(labels, probs):
 @torch.no_grad()
 def evaluate(model, loader, with_auc=True):
     model.eval()
-    loss_sum, n_tab, n_fused, total = 0.0, 0, 0, 0
+    loss_sum, n_tab, n_fused, total, ce_sum = 0.0, 0, 0, 0, 0.0
     labels, tab_probs, fused_probs = [], [], []
     for tab_data, tab_label, img_data, img_label in loader:
         img_data = img_data.view(-1, 28*28).to(DEVICE)
@@ -719,6 +719,7 @@ def evaluate(model, loader, with_auc=True):
         x_rand = torch.rand(img_data.shape[0], 28*28, device=DEVICE)
         recon_x, tab_pred, fused_pred, z = model(x_rand, tab_data)
         loss_sum += loss_function(recon_x, img_data, tab_pred, tab_label, fused_pred, z).item()
+        ce_sum += F.cross_entropy(fused_pred, tab_label, reduction='sum').item()
         n_tab += (tab_pred.argmax(1) == tab_label).sum().item()
         n_fused += (fused_pred.argmax(1) == tab_label).sum().item()
         total += tab_label.size(0)
@@ -731,6 +732,7 @@ def evaluate(model, loader, with_auc=True):
         'tab_acc': 100 * n_tab / total,
         'fused_acc': 100 * n_fused / total,
         'tab_auc': 0.0, 'fused_auc': 0.0,
+        'fused_ce': ce_sum / total,
     }
     if with_auc:
         labels = np.concatenate(labels)
@@ -958,7 +960,7 @@ best_val_acc, best_accuracy, best_auc, best_epoch = 0.0, 0.0, 0.0, 0
 for epoch in range(1, EPOCH + 1):
     train_loss = train(cae, train_synchronized_loader, optimizer, epoch)
     val = evaluate(cae, val_synchronized_loader, with_auc=False)
-    key = (val['fused_acc'], -val['loss'])      # val accuracy, ties broken by val loss
+    key = (val['fused_acc'], -val['fused_ce'])      # val accuracy, ties broken by fused cross-entropy
     if key > best_key:
         best_key, best_epoch, best_val_acc = key, epoch, val['fused_acc']
         t = evaluate(cae, test_synchronized_loader)   # test is only read, never used to choose
