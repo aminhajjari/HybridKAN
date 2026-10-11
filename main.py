@@ -273,7 +273,7 @@ if X_df.shape[1] == 0:
 X = X_df.values.astype(np.float64)   # NaNs stay in; imputed after the split
 imputed_count = int(np.isnan(X).sum())
 if imputed_count > 0:
-    print(f"[INFO] Imputed {imputed_count} missing values")
+    print(f"[INFO] Found {imputed_count} missing values (imputed after the split)")
 
 unique_values = sorted(set(y))
 num_classes = len(unique_values)
