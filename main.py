@@ -662,60 +662,7 @@ def evaluate(model, loader):
         'fused_auc': _auc(labels, np.concatenate(fused_probs)),
     }
 
-    with torch.no_grad():
-        for tab_data, tab_label, img_data, img_label in test_data_loader:
-            img_data = img_data.view(-1, 28*28).to(DEVICE)
-            tab_data = tab_data.to(DEVICE)
-            tab_label = tab_label.to(DEVICE).long()
-            random_array = np.random.rand(img_data.shape[0], 28*28)
-            x_rand = torch.Tensor(random_array).view(-1, 28*28).to(DEVICE)
-            recon_x, tab_pred, fused_pred, z = model(x_rand, tab_data)
-            test_loss += loss_function(recon_x, img_data, tab_pred, tab_label, fused_pred, z).item()
-            tab_probs = F.softmax(tab_pred, dim=1)
-            fused_probs = F.softmax(fused_pred, dim=1)
-            all_tab_labels.extend(tab_label.cpu().numpy())
-            all_tab_preds.extend(tab_probs.cpu().numpy())
-            all_fused_preds.extend(fused_probs.cpu().numpy())
-            tab_predicted = torch.argmax(tab_pred, dim=1)
-            fused_predicted = torch.argmax(fused_pred, dim=1)
-            correct_tab_total += (tab_predicted == tab_label).sum().item()
-            correct_fused_total += (fused_predicted == tab_label).sum().item()
-            total += tab_label.size(0)
-    
-    test_loss /= len(test_data_loader)
-    tab_accuracy_total = 100 * correct_tab_total / total
-    fused_accuracy_total = 100 * correct_fused_total / total
-    
-    all_tab_preds_arr = np.array(all_tab_preds)
-    all_fused_preds_arr = np.array(all_fused_preds)
-    all_tab_labels_arr = np.array(all_tab_labels)
-
-    tab_auc, fused_auc = 0.0, 0.0
-    if not (np.isnan(all_tab_preds_arr).any() or np.isinf(all_tab_preds_arr).any()):
-        try:
-            if num_classes == 2:
-                tab_auc = roc_auc_score(all_tab_labels_arr, all_tab_preds_arr[:, 1])
-            else:
-                tab_auc = roc_auc_score(all_tab_labels_arr, all_tab_preds_arr, multi_class="ovr", average="macro")
-        except Exception as e:
-            print(f"[WARNING] Tab AUC calculation failed: {e}")
-
-    if not (np.isnan(all_fused_preds_arr).any() or np.isinf(all_fused_preds_arr).any()):
-        try:
-            if num_classes == 2:
-                fused_auc = roc_auc_score(all_tab_labels_arr, all_fused_preds_arr[:, 1])
-            else:
-                fused_auc = roc_auc_score(all_tab_labels_arr, all_fused_preds_arr, multi_class="ovr", average="macro")
-        except Exception as e:
-            print(f"[WARNING] Fused AUC calculation failed: {e}")
-
-    if fused_accuracy_total > best_accuracy:
-        best_accuracy = fused_accuracy_total
-        best_auc = fused_auc
-        best_epoch = epoch
-        print(f"[INFO] New best accuracy: {best_accuracy:.2f}% (AUC: {fused_auc:.4f}) at epoch {epoch}")
-
-    return best_accuracy, best_auc, best_epoch, test_loss, tab_accuracy_total, fused_accuracy_total
+   
 
 # ========== IMAGE SAVING FUNCTION ==========
 
