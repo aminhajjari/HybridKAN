@@ -7,7 +7,7 @@
 #SBATCH --account=def-arashmoh
 #SBATCH --job-name=KanManyClass
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=a100:1
+#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=96:00:00
@@ -43,7 +43,7 @@ export MAX_FEATURES=1100
 RUN_TAG="medmnist"
 if [ "$POOL_LIMIT" != "0" ]; then RUN_TAG="medmnist_limit${POOL_LIMIT}"; fi
 
-# Results: everything of this run lives in its own folder (nothing is written to the 67-dataset output folder)
+# Results: everything of this run lives in its own folder (sample images go to .../Sedo/output/imageout)
 RESULTS_BASE="/home/gkianfar/scratch/Amin/Sedo/output_manyclass/${RUN_TAG}"
 export OUTPUT_ROOT="$RESULTS_BASE"
 JOB_LOGS_DIR="$RESULTS_BASE/logs"
@@ -249,8 +249,7 @@ python "$BATCH_SCRIPT" \
     --output_base "$RESULTS_BASE" \
     --job_id "$SLURM_JOB_ID" \
     --script_path "$MAIN_SCRIPT" \
-    --timeout "$TIMEOUT_DEFAULT" \
-    --skip_existing
+    --timeout "$TIMEOUT_DEFAULT"
 
 EXIT_CODE=$?
 
@@ -320,8 +319,8 @@ else
 
     echo ""
     echo "Check SLURM logs:"
-    echo "    Output: $JOB_LOGS_DIR/production_${SLURM_JOB_ID}.out"
-    echo "    Error:  $JOB_LOGS_DIR/production_${SLURM_JOB_ID}.err"
+    echo "    Output: /home/gkianfar/scratch/Amin/Sedo/output/logs/manyclass_${SLURM_JOB_ID}.out"
+    echo "    Error:  /home/gkianfar/scratch/Amin/Sedo/output/logs/manyclass_${SLURM_JOB_ID}.err"
 
 fi
 
