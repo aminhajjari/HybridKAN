@@ -749,7 +749,7 @@ def save_sample_images(model, test_data_loader, dataset_name, num_classes, num_i
     """
     model.eval()
     num_classes = min(num_classes, 20)   # the grid has 2*num_classes rows, so only draw the first 20 classes
-    images_base_dir = os.path.join(OUTPUT_ROOT, "imageout")
+    images_base_dir = "/home/gkianfar/scratch/Amin/Sedo/output/imageout"
     images_dir = os.path.join(images_base_dir, dataset_name)
     os.makedirs(images_dir, exist_ok=True)
     
