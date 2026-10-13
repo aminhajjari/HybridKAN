@@ -35,17 +35,7 @@ parser.add_argument('--num_images', type=int, default=20,
                    help='Number of sample images to save (default: 20)')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 args = parser.parse_args()
-SEED = args.seed
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-set_seed(SEED)
 # ========== PARAMETERS ==========
 EPOCH = 50
 BATCH_SIZE = 64
@@ -295,18 +285,17 @@ for col in X_df.columns:
 if X_df.shape[1] == 0:
     raise ValueError(f"All features dropped for {file_name} — check dtype handling.")
 
-X = X_df.values.astype(np.float64)   # NaNs stay in; imputed after the split
-feature_names = X_df.columns.tolist()
-missing_count = int(np.isnan(X).sum())
-if missing_count > 0:
-    print(f"[INFO] Found {missing_count} missing values (imputed after the split)")
+print(f"[INFO] Imputing missing values with median...")
+imputer = SimpleImputer(strategy='median')
+X = imputer.fit_transform(X_df)
+imputed_count = X_df.isnull().sum().sum()
+if imputed_count > 0:
+    print(f"[INFO] Imputed {imputed_count} missing values")
 
 if X.shape[1] > MAX_FEATURES:
-    _var = np.nan_to_num(np.nanvar(X, axis=0), nan=0.0)
-    _keep = np.sort(np.argsort(_var)[-MAX_FEATURES:])
+    _keep = np.sort(np.argsort(X.var(axis=0))[-MAX_FEATURES:])
     print(f"[INFO] {X.shape[1]} features > MAX_FEATURES={MAX_FEATURES}: keeping the {MAX_FEATURES} highest-variance columns (label-free)")
     X = X[:, _keep]
-    feature_names = [feature_names[i] for i in _keep]
 
 unique_values = sorted(set(y))
 num_classes = len(unique_values)
@@ -327,22 +316,15 @@ print(f"{'='*70}\n")
 
 print(f"[INFO] Image pool: MedMNIST 28x28 from {MEDMNIST_ROOT}")
 
-print("[INFO] Splitting into train/val/test...")
-X_trainval, X_test, y_trainval, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=SEED, stratify=y
-)
-val_frac = max(0.1, (num_classes + 1) / len(X_trainval))   # keeps every class in val
-X_train, X_val, y_train, y_val = train_test_split(
-    X_trainval, y_trainval, test_size=val_frac, random_state=SEED, stratify=y_trainval
-)
-
-# fit imputer and scaler on the training split only
-imputer = SimpleImputer(strategy='median', keep_empty_features=True)  # sklearn >= 1.2
+print("[INFO] Standardizing features...")
 scaler = StandardScaler()
-X_train = scaler.fit_transform(imputer.fit_transform(X_train))
-X_val   = scaler.transform(imputer.transform(X_val))
-X_test  = scaler.transform(imputer.transform(X_test))
-print(f"[INFO] Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
+X = scaler.fit_transform(X)
+
+print("[INFO] Splitting into train/test (80/20)...")
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+print(f"[INFO] Train samples: {len(X_train)}, Test samples: {len(X_test)}")
 
 train_tabular_dataset = TensorDataset(
     torch.tensor(X_train, dtype=torch.float32), 
@@ -351,11 +333,6 @@ train_tabular_dataset = TensorDataset(
 test_tabular_dataset = TensorDataset(
     torch.tensor(X_test, dtype=torch.float32), 
     torch.tensor(y_test, dtype=torch.long)
-)
-
-val_tabular_dataset = TensorDataset(
-    torch.tensor(X_val, dtype=torch.float32),
-    torch.tensor(y_val, dtype=torch.long)
 )
 
 print("[INFO] Calculating VIF values...")
@@ -386,8 +363,6 @@ train_tabular_label_counts = torch.bincount(train_tabular_dataset.tensors[1], mi
 test_tabular_label_counts = torch.bincount(test_tabular_dataset.tensors[1], minlength=num_classes)
 num_samples_needed = train_tabular_label_counts.tolist()
 num_samples_needed_test = test_tabular_label_counts.tolist()
-val_tabular_label_counts = torch.bincount(val_tabular_dataset.tensors[1], minlength=num_classes)
-num_samples_needed_val = val_tabular_label_counts.tolist()
 class ArrayImageDataset(Dataset):
     """28x28 uint8 images held in memory -> float tensor [1,28,28] in [0,1] (same as transforms.ToTensor())."""
     def __init__(self, images, labels):
@@ -462,24 +437,24 @@ valid_labels = sorted(range(num_classes))
 repeated_indices = {
     label: list(itertools.islice(
         itertools.cycle(indices_by_label[label]),
-        num_samples_needed[label] + num_samples_needed_val[label] + num_samples_needed_test[label]
+        num_samples_needed[label] + num_samples_needed_test[label]
     ))
     for label in indices_by_label
 }
 
-aligned_train_indices, aligned_val_indices, aligned_test_indices = [], [], []
+aligned_train_indices = []
+aligned_test_indices = []
 for label in valid_labels:
-    train_tab = [i for i, lbl in enumerate(y_train) if lbl == label]
-    val_tab   = [i for i, lbl in enumerate(y_val) if lbl == label]
-    test_tab  = [i for i, lbl in enumerate(y_test) if lbl == label]
-    n_tr, n_va, n_te = num_samples_needed[label], num_samples_needed_val[label], num_samples_needed_test[label]
-    train_img = repeated_indices[label][:n_tr]
-    val_img   = repeated_indices[label][n_tr:n_tr + n_va]
-    test_img  = repeated_indices[label][n_tr + n_va:n_tr + n_va + n_te]
-    if len(train_tab) == len(train_img) and len(val_tab) == len(val_img) and len(test_tab) == len(test_img):
-        aligned_train_indices.extend(zip(train_tab, train_img))
-        aligned_val_indices.extend(zip(val_tab, val_img))
-        aligned_test_indices.extend(zip(test_tab, test_img))
+    train_tab_indices = np.where(y_train == label)[0].tolist()
+    test_tab_indices = np.where(y_test == label)[0].tolist()
+    train_img_indices = repeated_indices[label][:num_samples_needed[label]]
+    test_img_indices = repeated_indices[label][
+        num_samples_needed[label]:num_samples_needed[label] + num_samples_needed_test[label]
+    ]
+    if len(train_tab_indices) == len(train_img_indices) and \
+       len(test_tab_indices) == len(test_img_indices):
+        aligned_train_indices.extend(list(zip(train_tab_indices, train_img_indices)))
+        aligned_test_indices.extend(list(zip(test_tab_indices, test_img_indices)))
     else:
         raise ValueError(f"Mismatch for label {label}")
 
@@ -487,8 +462,6 @@ train_filtered_tab_set = Subset(train_tabular_dataset, [idx[0] for idx in aligne
 train_filtered_img_set = Subset(combined_dataset, [idx[1] for idx in aligned_train_indices])
 test_filtered_tab_set = Subset(test_tabular_dataset, [idx[0] for idx in aligned_test_indices])
 test_filtered_img_set = Subset(combined_dataset, [idx[1] for idx in aligned_test_indices])
-val_filtered_tab_set = Subset(val_tabular_dataset, [idx[0] for idx in aligned_val_indices])
-val_filtered_img_set = Subset(combined_dataset, [idx[1] for idx in aligned_val_indices])
 
 class SynchronizedDataset(Dataset):
     def __init__(self, tabular_dataset, image_dataset):
@@ -504,12 +477,8 @@ class SynchronizedDataset(Dataset):
 
 train_synchronized_dataset = SynchronizedDataset(train_filtered_tab_set, train_filtered_img_set)
 test_synchronized_dataset = SynchronizedDataset(test_filtered_tab_set, test_filtered_img_set)
-val_synchronized_dataset = SynchronizedDataset(val_filtered_tab_set, val_filtered_img_set)
-g = torch.Generator()
-g.manual_seed(SEED)
-train_synchronized_loader = DataLoader(train_synchronized_dataset, batch_size=BATCH_SIZE, shuffle=True, generator=g)
-val_synchronized_loader   = DataLoader(val_synchronized_dataset, batch_size=BATCH_SIZE)
-test_synchronized_loader  = DataLoader(test_synchronized_dataset, batch_size=BATCH_SIZE)
+train_synchronized_loader = DataLoader(train_synchronized_dataset, batch_size=BATCH_SIZE, shuffle=True)
+test_synchronized_loader = DataLoader(test_synchronized_dataset, batch_size=BATCH_SIZE)
 print(f"[INFO] Synchronized datasets created. Train batches: {len(train_synchronized_loader)}")
 
 # ========== MODEL DEFINITIONS ==========
@@ -686,7 +655,8 @@ def train(model, train_data_loader, optimizer, epoch):
         tab_data = tab_data.to(DEVICE)
         tab_label = tab_label.to(DEVICE).long()
         optimizer.zero_grad()
-        x_rand = torch.rand(img_data.shape[0], 28*28, device=DEVICE)
+        random_array = np.random.rand(img_data.shape[0], 28*28)
+        x_rand = torch.Tensor(random_array).to(DEVICE)
         recon_x, tab_pred, fused_pred, z = model(x_rand, tab_data)
         loss = loss_function(recon_x, img_data, tab_pred, tab_label, fused_pred, z)
         loss.backward()
@@ -694,51 +664,69 @@ def train(model, train_data_loader, optimizer, epoch):
         optimizer.step()
     return train_loss / len(train_data_loader)
 
-def _auc(labels, probs):
-    try:
-        probs = probs.astype(np.float64)
-        probs = probs / probs.sum(axis=1, keepdims=True)
-        if not np.isfinite(probs).all():
-            return 0.0
-        if num_classes == 2:
-            return roc_auc_score(labels, probs[:, 1])
-        return roc_auc_score(labels, probs, multi_class="ovr", average="macro")
-    except Exception as e:
-        print(f"[WARNING] AUC calculation failed: {e}")
-        return 0.0
-
-@torch.no_grad()
-def evaluate(model, loader, with_auc=True):
+def test(model, test_data_loader, epoch, best_accuracy, best_auc, best_epoch):
     model.eval()
-    loss_sum, n_tab, n_fused, total, ce_sum = 0.0, 0, 0, 0, 0.0
-    labels, tab_probs, fused_probs = [], [], []
-    for tab_data, tab_label, img_data, img_label in loader:
-        img_data = img_data.view(-1, 28*28).to(DEVICE)
-        tab_data = tab_data.to(DEVICE)
-        tab_label = tab_label.to(DEVICE).long()
-        x_rand = torch.rand(img_data.shape[0], 28*28, device=DEVICE)
-        recon_x, tab_pred, fused_pred, z = model(x_rand, tab_data)
-        loss_sum += loss_function(recon_x, img_data, tab_pred, tab_label, fused_pred, z).item()
-        ce_sum += F.cross_entropy(fused_pred, tab_label, reduction='sum').item()
-        n_tab += (tab_pred.argmax(1) == tab_label).sum().item()
-        n_fused += (fused_pred.argmax(1) == tab_label).sum().item()
-        total += tab_label.size(0)
-        if with_auc:
-            labels.append(tab_label.cpu().numpy())
-            tab_probs.append(F.softmax(tab_pred, dim=1).cpu().numpy())
-            fused_probs.append(F.softmax(fused_pred, dim=1).cpu().numpy())
-    out = {
-        'loss': loss_sum / len(loader),
-        'tab_acc': 100 * n_tab / total,
-        'fused_acc': 100 * n_fused / total,
-        'tab_auc': 0.0, 'fused_auc': 0.0,
-        'fused_ce': ce_sum / total,
-    }
-    if with_auc:
-        labels = np.concatenate(labels)
-        out['tab_auc'] = _auc(labels, np.concatenate(tab_probs))
-        out['fused_auc'] = _auc(labels, np.concatenate(fused_probs))
-    return out
+    test_loss = 0
+    correct_tab_total = 0
+    correct_fused_total = 0
+    total = 0
+    all_tab_labels, all_tab_preds = [], []
+    all_fused_preds = []
+
+    with torch.no_grad():
+        for tab_data, tab_label, img_data, img_label in test_data_loader:
+            img_data = img_data.view(-1, 28*28).to(DEVICE)
+            tab_data = tab_data.to(DEVICE)
+            tab_label = tab_label.to(DEVICE).long()
+            random_array = np.random.rand(img_data.shape[0], 28*28)
+            x_rand = torch.Tensor(random_array).view(-1, 28*28).to(DEVICE)
+            recon_x, tab_pred, fused_pred, z = model(x_rand, tab_data)
+            test_loss += loss_function(recon_x, img_data, tab_pred, tab_label, fused_pred, z).item()
+            tab_probs = F.softmax(tab_pred, dim=1)
+            fused_probs = F.softmax(fused_pred, dim=1)
+            all_tab_labels.extend(tab_label.cpu().numpy())
+            all_tab_preds.extend(tab_probs.cpu().numpy())
+            all_fused_preds.extend(fused_probs.cpu().numpy())
+            tab_predicted = torch.argmax(tab_pred, dim=1)
+            fused_predicted = torch.argmax(fused_pred, dim=1)
+            correct_tab_total += (tab_predicted == tab_label).sum().item()
+            correct_fused_total += (fused_predicted == tab_label).sum().item()
+            total += tab_label.size(0)
+    
+    test_loss /= len(test_data_loader)
+    tab_accuracy_total = 100 * correct_tab_total / total
+    fused_accuracy_total = 100 * correct_fused_total / total
+    
+    all_tab_preds_arr = np.array(all_tab_preds)
+    all_fused_preds_arr = np.array(all_fused_preds)
+    all_tab_labels_arr = np.array(all_tab_labels)
+
+    tab_auc, fused_auc = 0.0, 0.0
+    if not (np.isnan(all_tab_preds_arr).any() or np.isinf(all_tab_preds_arr).any()):
+        try:
+            if num_classes == 2:
+                tab_auc = roc_auc_score(all_tab_labels_arr, all_tab_preds_arr[:, 1])
+            else:
+                tab_auc = roc_auc_score(all_tab_labels_arr, all_tab_preds_arr, multi_class="ovr", average="macro")
+        except Exception as e:
+            print(f"[WARNING] Tab AUC calculation failed: {e}")
+
+    if not (np.isnan(all_fused_preds_arr).any() or np.isinf(all_fused_preds_arr).any()):
+        try:
+            if num_classes == 2:
+                fused_auc = roc_auc_score(all_tab_labels_arr, all_fused_preds_arr[:, 1])
+            else:
+                fused_auc = roc_auc_score(all_tab_labels_arr, all_fused_preds_arr, multi_class="ovr", average="macro")
+        except Exception as e:
+            print(f"[WARNING] Fused AUC calculation failed: {e}")
+
+    if fused_accuracy_total > best_accuracy:
+        best_accuracy = fused_accuracy_total
+        best_auc = fused_auc
+        best_epoch = epoch
+        print(f"[INFO] New best accuracy: {best_accuracy:.2f}% (AUC: {fused_auc:.4f}) at epoch {epoch}")
+
+    return best_accuracy, best_auc, best_epoch, test_loss, tab_accuracy_total, fused_accuracy_total
 
 # ========== IMAGE SAVING FUNCTION ==========
 
@@ -749,7 +737,7 @@ def save_sample_images(model, test_data_loader, dataset_name, num_classes, num_i
     """
     model.eval()
     num_classes = min(num_classes, 20)   # the grid has 2*num_classes rows, so only draw the first 20 classes
-    images_base_dir = "/home/gkianfar/scratch/Amin/Sedo/output/imageout"
+    images_base_dir = os.path.join(OUTPUT_ROOT, "imageout")
     images_dir = os.path.join(images_base_dir, dataset_name)
     os.makedirs(images_dir, exist_ok=True)
     
@@ -774,7 +762,8 @@ def save_sample_images(model, test_data_loader, dataset_name, num_classes, num_i
             tab_data = tab_data.to(DEVICE)
             
             # Generate reconstructed images
-            x_rand = torch.rand(img_data.shape[0], 28*28, device=DEVICE)
+            random_array = np.random.rand(img_data_flat.shape[0], 28*28)
+            x_rand = torch.Tensor(random_array).to(DEVICE)
             recon_x, _, _, _ = model(x_rand, tab_data)
             
             # Store samples by class
@@ -954,24 +943,20 @@ print("\n" + "="*70)
 print("STARTING TRAINING")
 print("="*70)
 
-best_key = (-1.0, -float('inf'))
-best_val_acc, best_accuracy, best_auc, best_epoch = 0.0, 0.0, 0.0, 0
+best_accuracy = 0
+best_auc = 0
+best_epoch = 0
 
 for epoch in range(1, EPOCH + 1):
     train_loss = train(cae, train_synchronized_loader, optimizer, epoch)
-    val = evaluate(cae, val_synchronized_loader, with_auc=False)
-    key = (val['fused_acc'], -val['fused_ce'])      # val accuracy, ties broken by fused cross-entropy
-    if key > best_key:
-        best_key, best_epoch, best_val_acc = key, epoch, val['fused_acc']
-        t = evaluate(cae, test_synchronized_loader)   # test is only read, never used to choose
-        best_accuracy, best_auc = t['fused_acc'], t['fused_auc']
-        print(f"[INFO] New best val acc {best_val_acc:.2f}% at epoch {epoch} "
-              f"-> test acc {best_accuracy:.2f}%, AUC {best_auc:.4f}")
+    best_accuracy, best_auc, best_epoch, test_loss, tab_acc, fused_acc  = test(
+        cae, test_synchronized_loader, epoch, best_accuracy, best_auc, best_epoch
+    )
+    
     if epoch % 10 == 0 or epoch == 1:
         print(f"[Epoch {epoch:3d}] Train Loss: {train_loss:.4f} | "
-              f"Val Loss: {val['loss']:.4f} | Val Fused Acc: {val['fused_acc']:.2f}%")
-    
-
+              f"Test Loss: {test_loss:.4f} | "
+              f"Tab Acc: {tab_acc:.2f}% | Fused Acc: {fused_acc:.2f}%")
 
 print("\n" + "="*70)
 print("TRAINING COMPLETE")
@@ -982,7 +967,7 @@ cae.eval()
 with torch.no_grad():
     xb = torch.tensor(X_train[:512], dtype=torch.float32, device=DEVICE)
     scores = cae.mlp.feature_score(xb).cpu().numpy()
-importances = sorted(zip(feature_names, scores), key=lambda t: t[1], reverse=True)
+importances = sorted(zip(X_df.columns.tolist(), scores), key=lambda t: t[1], reverse=True)
 print("Top KAN feature importances:")
 for name, s in importances[:15]:
     print(f"  {name:30s} {s:.4f}")
@@ -1067,9 +1052,7 @@ results = {
     'images_dir': save_dir,
     'trainable_params': num_params,  
     'matches_table2': (num_classes == 2 and n_cont_features == 78),  
-    'timestamp': datetime.now().isoformat(),
-    'best_val_accuracy': best_val_acc,
-    'seed': SEED,
+    'timestamp': datetime.now().isoformat()
 }
 # Print JSON result (batch script will capture this)
 print("\n" + "="*70)
