@@ -33,7 +33,7 @@ parser.add_argument('--save_dir', type=str, required=False, default=None,
                    help='Directory to save results (optional, for compatibility)')
 parser.add_argument('--num_images', type=int, default=20,
                    help='Number of sample images to save (default: 20)')
-parser.add_argument('--seed', type=int, default=42, help='Random seed')
+
 args = parser.parse_args()
 
 # ========== PARAMETERS ==========
@@ -44,22 +44,7 @@ NUM_IMAGES_TO_SAVE = min(args.num_images, 20)  # Cap at 20
 data_path = args.data
 file_name = os.path.basename(os.path.dirname(data_path))
 
-
-# ===== MANY-CLASS (>20) VERSION: MedMNIST images only, own output folder =====
-# (separate from main.py: no FashionMNIST / MNIST, no old Image folder, no old output folder)
-MEDMNIST_ROOT = os.environ.get("MEDMNIST_ROOT", "/home/gkianfar/scratch/Amin/Sedo/MedMNIST")
-OUTPUT_ROOT   = os.environ.get("OUTPUT_ROOT", "/home/gkianfar/scratch/Amin/Sedo/output_manyclass/medmnist")
-POOL_LIMIT    = int(os.environ.get("POOL_LIMIT", 0))         # 0 = all MedMNIST classes as distinct images; 20 = ablation with 20 distinct images
-MAX_FEATURES  = int(os.environ.get("MAX_FEATURES", 1100))    # keep top-variance columns above this (amazon has ~10k)
-POOL_NAME     = "medmnist" if POOL_LIMIT == 0 else f"medmnist_limit{POOL_LIMIT}"
-# per-dataset switches (keyed by the dataset FOLDER name)
-CAP_PER_CLASS = {"dionis": 100, "aloi": 54}                  # stratified row cap per class; NO_CAP=1 disables
-DROP_COLS_BY_DATASET = {"Bach_Choral_Harmony": [0, 1]}       # id / event-number columns (only if the file has no header)
-# MedMNIST sets are appended in this order (classes numbered from 0); loaded only as far as needed
-MEDMNIST_ORDER = ["pathmnist", "bloodmnist", "dermamnist", "retinamnist",
-                  "octmnist", "tissuemnist", "breastmnist", "pneumoniamnist"]
-os.makedirs(OUTPUT_ROOT, exist_ok=True)
-print(f"[CONFIG] pool={POOL_NAME}  MEDMNIST_ROOT={MEDMNIST_ROOT}  OUTPUT_ROOT={OUTPUT_ROOT}  MAX_FEATURES={MAX_FEATURES}")
+DATASET_ROOT = "/home/gkianfar/scratch/Amin/ICC/Unzippeddata/Image"
 #CLIP_MODEL_PATH = "/home/gkianfar/scratch/Amin/ICC/models/ViT-B-32.pt"
 
 
@@ -147,13 +132,6 @@ df = df.replace(missing_markers, np.nan)
 initial_missing = df.isnull().sum().sum()
 print(f"[INFO] Initial missing values: {initial_missing}")
 
-_drop = [c for c in DROP_COLS_BY_DATASET.get(file_name, []) if c in df.columns]
-if _drop:
-    print(f"[INFO] {file_name}: dropping identifier columns {_drop}")
-    df = df.drop(columns=_drop)
-elif file_name in DROP_COLS_BY_DATASET:
-    print(f"[WARNING] {file_name}: expected headerless columns {DROP_COLS_BY_DATASET[file_name]} not found, nothing dropped")
-
 # ========== IMPROVED TARGET COLUMN DETECTION ==========
 target_col = None
 
@@ -239,12 +217,6 @@ else:
     print(f"[ERROR] Target column '{target_col}' not found in dataframe!")
     exit(1)
 
-_cap = CAP_PER_CLASS.get(file_name, 0)
-if _cap and not os.environ.get("NO_CAP"):
-    _before = len(df)
-    df = df.sample(frac=1.0, random_state=42).groupby(target_col, sort=False).head(_cap).reset_index(drop=True)
-    print(f"[INFO] {file_name}: stratified cap of {_cap} rows/class -> {_before} -> {len(df)} rows (set NO_CAP=1 to disable)")
-
 missing_threshold = 0.5
 missing_pct = df.isnull().sum() / len(df)
 cols_to_drop = missing_pct[missing_pct > missing_threshold].index.tolist()
@@ -270,6 +242,9 @@ else:
 num_classes = len(unique_values)
 print(f"[INFO] Detected {num_classes} unique classes: {unique_values}")
 
+if num_classes > 20:
+    print(f"[ERROR] Dataset has {num_classes} classes (>20). Skipping...")
+    exit(1)
 if num_classes < 2:
     raise ValueError(f"Dataset has only {num_classes} class. Need at least 2.")
 
@@ -292,11 +267,6 @@ imputed_count = X_df.isnull().sum().sum()
 if imputed_count > 0:
     print(f"[INFO] Imputed {imputed_count} missing values")
 
-if X.shape[1] > MAX_FEATURES:
-    _keep = np.sort(np.argsort(X.var(axis=0))[-MAX_FEATURES:])
-    print(f"[INFO] {X.shape[1]} features > MAX_FEATURES={MAX_FEATURES}: keeping the {MAX_FEATURES} highest-variance columns (label-free)")
-    X = X[:, _keep]
-
 unique_values = sorted(set(y))
 num_classes = len(unique_values)
 value_map = {unique_values[i]: i for i in range(num_classes)}
@@ -314,7 +284,25 @@ print(f"  - Class distribution: {dict(zip(*np.unique(y, return_counts=True)))}")
 print(f"  - Tab latent size: {tab_latent_size}")
 print(f"{'='*70}\n")
 
-print(f"[INFO] Image pool: MedMNIST 28x28 from {MEDMNIST_ROOT}")
+print("[INFO] Loading FashionMNIST and MNIST datasets...")
+fashionmnist_dataset = datasets.FashionMNIST(
+    root=DATASET_ROOT, train=True, download=False, transform=transforms.ToTensor()
+)
+mnist_dataset = datasets.MNIST(
+    root=DATASET_ROOT, train=True, download=False, transform=transforms.ToTensor()
+)
+
+class ModifiedLabelDataset(Dataset):
+    def __init__(self, dataset, label_offset=10):
+        self.dataset = dataset
+        self.label_offset = label_offset
+    def __len__(self):
+        return len(self.dataset)
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        return image, label + self.label_offset
+
+modified_mnist_dataset = ModifiedLabelDataset(mnist_dataset, label_offset=10)
 
 print("[INFO] Standardizing features...")
 scaler = StandardScaler()
@@ -363,76 +351,19 @@ train_tabular_label_counts = torch.bincount(train_tabular_dataset.tensors[1], mi
 test_tabular_label_counts = torch.bincount(test_tabular_dataset.tensors[1], minlength=num_classes)
 num_samples_needed = train_tabular_label_counts.tolist()
 num_samples_needed_test = test_tabular_label_counts.tolist()
-class ArrayImageDataset(Dataset):
-    """28x28 uint8 images held in memory -> float tensor [1,28,28] in [0,1] (same as transforms.ToTensor())."""
-    def __init__(self, images, labels):
-        self.images, self.labels = images, labels
-    def __len__(self):
-        return len(self.images)
-    def __getitem__(self, i):
-        img = torch.from_numpy(np.ascontiguousarray(self.images[i])).float().div_(255.0).unsqueeze(0)
-        return img, int(self.labels[i])
+valid_labels = set(range(num_classes))
 
+filtered_fashion = Subset(fashionmnist_dataset, 
+    [i for i, (_, label) in enumerate(fashionmnist_dataset) if label in valid_labels])
+filtered_mnist = Subset(modified_mnist_dataset, 
+    [i for i, (_, label) in enumerate(modified_mnist_dataset) if label in valid_labels])
+combined_dataset = ConcatDataset([filtered_fashion, filtered_mnist])
 
-def find_medmnist_npz(root, name):
-    """Locate the plain 28x28 <name>.npz inside MEDMNIST_ROOT (folder layout is searched, not assumed)."""
-    import glob
-    for c in (os.path.join(root, name, name + ".npz"), os.path.join(root, name + ".npz")):
-        if os.path.isfile(c):
-            return c
-    folder = os.path.join(root, name)
-    found = sorted(glob.glob(os.path.join(folder, "**", "*.npz"), recursive=True), key=os.path.getsize)
-    exact = [f for f in found if os.path.basename(f) == name + ".npz"]
-    if exact:
-        return exact[0]
-    plain = [f for f in found if not os.path.basename(f)[:-4].endswith(("_64", "_128", "_224"))]
-    if plain:
-        return plain[0]
-    listing = os.listdir(folder) if os.path.isdir(folder) else "folder not found"
-    raise FileNotFoundError(f"No {name}.npz under {folder}. Contents: {listing}")
-
-
-def load_medmnist_train(path):
-    d = np.load(path)
-    imgs, labs = d["train_images"], d["train_labels"].reshape(-1).astype(np.int64)
-    if imgs.ndim == 4:                                   # RGB (N,28,28,3) -> grayscale, in chunks to save RAM
-        gray = np.empty(imgs.shape[:3], dtype=np.uint8)
-        for s in range(0, len(imgs), 8192):
-            c = imgs[s:s + 8192].astype(np.uint32)
-            gray[s:s + 8192] = ((c[..., 0] * 299 + c[..., 1] * 587 + c[..., 2] * 114) // 1000).astype(np.uint8)
-        imgs = gray
-    assert imgs.shape[1:] == (28, 28), f"{path}: expected 28x28 images, got {imgs.shape[1:]} (wrong size file?)"
-    return imgs, labs
-
-
-def build_image_pool(n_classes):
-    """MedMNIST image pool. Returns (combined_dataset, indices_by_label, distinct_image_classes, wrapped).
-    Pool class ids are numbered from 0 in MEDMNIST_ORDER. Dataset class c uses pool class c; when the dataset has more
-    classes than the pool offers, classes wrap (c % distinct) and share images (the log prints a warning).
-    POOL_LIMIT > 0 caps the number of distinct image classes (ablation)."""
-    need = min(n_classes, POOL_LIMIT) if POOL_LIMIT > 0 else n_classes
-    parts, tgts, offset = [], [], 0
-    for name in MEDMNIST_ORDER:
-        if offset >= need:
-            break
-        path = find_medmnist_npz(MEDMNIST_ROOT, name)
-        imgs, labs = load_medmnist_train(path)
-        n_cls = int(labs.max()) + 1
-        assert len(np.unique(labs)) == n_cls, f"{name}: labels are not 0..{n_cls - 1}"
-        print(f"[POOL] classes {offset:>3}-{offset + n_cls - 1:<3} <- {name}  ({len(imgs)} images)  {path}")
-        parts.append(ArrayImageDataset(imgs, labs)); tgts.append(labs + offset); offset += n_cls
-    pool_targets = np.concatenate(tgts)
-    distinct = min(offset, POOL_LIMIT) if POOL_LIMIT > 0 else offset
-    by_src = {s: np.where(pool_targets == s)[0].tolist() for s in range(offset)}
-    wrapped = n_classes > distinct
-    if wrapped:
-        print(f"[WARNING] {n_classes} classes > {distinct} distinct image classes: classes c and c+{distinct} share images")
-    print(f"[INFO] Image pool={POOL_NAME}: {distinct} distinct image classes, {n_classes} dataset classes mapped")
-    return ConcatDataset(parts), {c: by_src[c % distinct] for c in range(n_classes)}, distinct, wrapped
-
-
-combined_dataset, indices_by_label, pool_size, pool_wrapped = build_image_pool(num_classes)
-valid_labels = sorted(range(num_classes))
+indices_by_label = {label: [] for label in range(num_classes)}
+for i, (_, label) in enumerate(combined_dataset):
+    if label not in indices_by_label:
+        print(f"[WARNING] Unexpected label {label} at index {i}")
+    indices_by_label[label].append(i)
 
 repeated_indices = {
     label: list(itertools.islice(
@@ -445,8 +376,8 @@ repeated_indices = {
 aligned_train_indices = []
 aligned_test_indices = []
 for label in valid_labels:
-    train_tab_indices = np.where(y_train == label)[0].tolist()
-    test_tab_indices = np.where(y_test == label)[0].tolist()
+    train_tab_indices = [i for i, lbl in enumerate(y_train) if lbl == label]
+    test_tab_indices = [i for i, lbl in enumerate(y_test) if lbl == label]
     train_img_indices = repeated_indices[label][:num_samples_needed[label]]
     test_img_indices = repeated_indices[label][
         num_samples_needed[label]:num_samples_needed[label] + num_samples_needed_test[label]
@@ -472,8 +403,9 @@ class SynchronizedDataset(Dataset):
         return len(self.tabular_dataset)
     def __getitem__(self, index):
         tab_data, tab_label = self.tabular_dataset[index]
-        img_data, _ = self.image_dataset[index]   # class pairing is guaranteed by build_image_pool
-        return tab_data, tab_label, img_data, tab_label
+        img_data, img_label = self.image_dataset[index]
+        assert tab_label == img_label
+        return tab_data, tab_label, img_data, img_label
 
 train_synchronized_dataset = SynchronizedDataset(train_filtered_tab_set, train_filtered_img_set)
 test_synchronized_dataset = SynchronizedDataset(test_filtered_tab_set, test_filtered_img_set)
@@ -482,6 +414,24 @@ test_synchronized_loader = DataLoader(test_synchronized_dataset, batch_size=BATC
 print(f"[INFO] Synchronized datasets created. Train batches: {len(train_synchronized_loader)}")
 
 # ========== MODEL DEFINITIONS ==========
+class ImageClassifierHead(nn.Module):
+    """
+    Trainable CNN classifier over the reconstructed 28x28 image.
+    Replaces the frozen CLIP zero-shot classifier, which scored against a
+    fixed clothing/digit vocabulary unrelated to the dataset's real classes.
+    """
+    def __init__(self, num_classes):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Flatten(),
+            nn.Linear(64 * 7 * 7, 128), nn.ReLU(),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        return self.net(x)
 
 
 class ImageFeatureEncoder(nn.Module):
@@ -585,7 +535,7 @@ class CAEWithTabEmbedding(nn.Module):
             nn.Linear(128, 28*28),
             nn.Sigmoid()
         )
-        
+        self.final_classifier = ImageClassifierHead(num_classes=num_classes)  # kept for img-only diagnostic accuracy
         self.hybrid = HybridKAN(
             image_encoder=ImageFeatureEncoder(),
             n_features=input_dim,
@@ -610,8 +560,9 @@ class CAEWithTabEmbedding(nn.Module):
         z = self.encode(x, tab_embedding, vif_embedding)
         recon_x = self.decode(z, tab_embedding, vif_embedding)
         recon_img = recon_x.view(-1, 1, 28, 28)
-        fused_pred = self.hybrid(tab_data, recon_img)
-        return recon_x, tab_pred, fused_pred, z
+        img_pred = self.final_classifier(recon_img)          # unchanged — diagnostic only now
+        fused_pred = self.hybrid(tab_data, recon_img)         # HybridKAN: embeddings fused through Final KAN
+        return recon_x, tab_pred, img_pred, fused_pred, z
 
 print("[INFO] Creating model...")
 cae = CAEWithTabEmbedding(
@@ -640,12 +591,13 @@ print(f"       Configuration: C={num_classes} classes, N={n_cont_features} featu
 if num_classes == 2 and n_cont_features == 78:
     print(f"       ✓ Matches Table 2 specs (Expected: ~627.6K)")
 #############################################
-def loss_function(recon_x, x, tab_pred, tab_labels, fused_pred, z, con_weight=0.5):
+def loss_function(recon_x, x, tab_pred, tab_labels, img_pred, img_labels, fused_pred, z, con_weight=0.5):
     BCE = F.mse_loss(recon_x, x)
     tab_loss = F.cross_entropy(tab_pred, tab_labels)
+    img_loss = F.cross_entropy(img_pred, img_labels)
     fused_loss = F.cross_entropy(fused_pred, tab_labels)
     con_loss = supcon_loss(z, tab_labels)
-    return BCE + tab_loss + fused_loss + con_weight * con_loss
+    return BCE + tab_loss + img_loss + fused_loss + con_weight * con_loss
 
 def train(model, train_data_loader, optimizer, epoch):
     model.train()
@@ -653,12 +605,13 @@ def train(model, train_data_loader, optimizer, epoch):
     for tab_data, tab_label, img_data, img_label in train_data_loader:
         img_data = img_data.view(-1, 28*28).to(DEVICE)
         tab_data = tab_data.to(DEVICE)
+        img_label = img_label.to(DEVICE).long()
         tab_label = tab_label.to(DEVICE).long()
         optimizer.zero_grad()
         random_array = np.random.rand(img_data.shape[0], 28*28)
         x_rand = torch.Tensor(random_array).to(DEVICE)
-        recon_x, tab_pred, fused_pred, z = model(x_rand, tab_data)
-        loss = loss_function(recon_x, img_data, tab_pred, tab_label, fused_pred, z)
+        recon_x, tab_pred, img_pred, fused_pred, z = model(x_rand, tab_data)
+        loss = loss_function(recon_x, img_data, tab_pred, tab_label, img_pred, img_label, fused_pred, z)
         loss.backward()
         train_loss += loss.item()
         optimizer.step()
@@ -668,33 +621,42 @@ def test(model, test_data_loader, epoch, best_accuracy, best_auc, best_epoch):
     model.eval()
     test_loss = 0
     correct_tab_total = 0
+    correct_img_total = 0
     correct_fused_total = 0
     total = 0
     all_tab_labels, all_tab_preds = [], []
+    all_img_labels, all_img_preds = [], []
     all_fused_preds = []
 
     with torch.no_grad():
         for tab_data, tab_label, img_data, img_label in test_data_loader:
             img_data = img_data.view(-1, 28*28).to(DEVICE)
             tab_data = tab_data.to(DEVICE)
+            img_label = img_label.to(DEVICE).long()
             tab_label = tab_label.to(DEVICE).long()
             random_array = np.random.rand(img_data.shape[0], 28*28)
             x_rand = torch.Tensor(random_array).view(-1, 28*28).to(DEVICE)
-            recon_x, tab_pred, fused_pred, z = model(x_rand, tab_data)
-            test_loss += loss_function(recon_x, img_data, tab_pred, tab_label, fused_pred, z).item()
+            recon_x, tab_pred, img_pred, fused_pred, z = model(x_rand, tab_data)
+            test_loss += loss_function(recon_x, img_data, tab_pred, tab_label, img_pred, img_label, fused_pred, z).item()
             tab_probs = F.softmax(tab_pred, dim=1)
+            img_probs = F.softmax(img_pred, dim=1)
             fused_probs = F.softmax(fused_pred, dim=1)
             all_tab_labels.extend(tab_label.cpu().numpy())
             all_tab_preds.extend(tab_probs.cpu().numpy())
+            all_img_labels.extend(img_label.cpu().numpy())
+            all_img_preds.extend(img_probs.cpu().numpy())
             all_fused_preds.extend(fused_probs.cpu().numpy())
             tab_predicted = torch.argmax(tab_pred, dim=1)
+            img_predicted = torch.argmax(img_pred, dim=1)
             fused_predicted = torch.argmax(fused_pred, dim=1)
             correct_tab_total += (tab_predicted == tab_label).sum().item()
+            correct_img_total += (img_predicted == img_label).sum().item()
             correct_fused_total += (fused_predicted == tab_label).sum().item()
             total += tab_label.size(0)
     
     test_loss /= len(test_data_loader)
     tab_accuracy_total = 100 * correct_tab_total / total
+    img_accuracy_total = 100 * correct_img_total / total
     fused_accuracy_total = 100 * correct_fused_total / total
     
     all_tab_preds_arr = np.array(all_tab_preds)
@@ -736,8 +698,7 @@ def save_sample_images(model, test_data_loader, dataset_name, num_classes, num_i
     Ensures all classes are represented in saved samples
     """
     model.eval()
-    num_classes = min(num_classes, 20)   # the grid has 2*num_classes rows, so only draw the first 20 classes
-    images_base_dir = os.path.join(OUTPUT_ROOT, "imageout")
+    images_base_dir = "/home/gkianfar/scratch/Amin/Sedo/output/imageout"
     images_dir = os.path.join(images_base_dir, dataset_name)
     os.makedirs(images_dir, exist_ok=True)
     
@@ -764,14 +725,14 @@ def save_sample_images(model, test_data_loader, dataset_name, num_classes, num_i
             # Generate reconstructed images
             random_array = np.random.rand(img_data_flat.shape[0], 28*28)
             x_rand = torch.Tensor(random_array).to(DEVICE)
-            recon_x, _, _, _ = model(x_rand, tab_data)
+            recon_x, _, _, _, _ = model(x_rand, tab_data)
             
             # Store samples by class
             for i in range(len(tab_label)):
                 label = tab_label[i].item()
                 
                 # Only collect if we need more samples for this class
-                if label in class_samples and len(class_samples[label]) < samples_per_class:
+                if len(class_samples[label]) < samples_per_class:
                     class_samples[label].append({
                         'original': img_data[i].cpu().numpy(),
                         'reconstructed': recon_x[i].cpu().numpy().reshape(28, 28),
@@ -949,14 +910,14 @@ best_epoch = 0
 
 for epoch in range(1, EPOCH + 1):
     train_loss = train(cae, train_synchronized_loader, optimizer, epoch)
-    best_accuracy, best_auc, best_epoch, test_loss, tab_acc, fused_acc  = test(
+    best_accuracy, best_auc, best_epoch, test_loss, tab_acc, img_acc = test(
         cae, test_synchronized_loader, epoch, best_accuracy, best_auc, best_epoch
     )
     
     if epoch % 10 == 0 or epoch == 1:
         print(f"[Epoch {epoch:3d}] Train Loss: {train_loss:.4f} | "
               f"Test Loss: {test_loss:.4f} | "
-              f"Tab Acc: {tab_acc:.2f}% | Fused Acc: {fused_acc:.2f}%")
+              f"Tab Acc: {tab_acc:.2f}% | Img Acc: {img_acc:.2f}%")
 
 print("\n" + "="*70)
 print("TRAINING COMPLETE")
@@ -979,7 +940,7 @@ print("YOUR MODEL BENCHMARK RESULTS")
 print("="*60)
 
 # Load/save your results history
-RESULTS_FILE = os.path.join(OUTPUT_ROOT, "my_model_wins.json")
+RESULTS_FILE = "/home/gkianfar/scratch/Amin/Sedo/output/my_model_wins.json"
 if os.path.exists(RESULTS_FILE):
     with open(RESULTS_FILE, 'r') as f:
         history = json.load(f)
@@ -992,9 +953,6 @@ history.append({
     'auc': round(best_auc, 4),
     'features': n_cont_features,
     'classes': num_classes,
-    'image_pool': POOL_NAME,
-    'pool_classes': pool_size,
-    'shared_images': pool_wrapped,
     'date': datetime.now().strftime("%Y-%m-%d")
 })
 
@@ -1042,9 +1000,6 @@ results = {
     'num_samples': len(X),
     'num_features': n_cont_features,
     'num_classes': num_classes,
-    'image_pool': POOL_NAME,
-    'pool_classes': pool_size,
-    'shared_images': pool_wrapped,
     'best_accuracy': best_accuracy,
     'best_auc': best_auc,
     'best_epoch': best_epoch,
