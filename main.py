@@ -933,6 +933,18 @@ print("Top KAN feature importances:")
 for name, s in importances[:15]:
     print(f"  {name:30s} {s:.4f}")
 
+
+
+from kan_interpret import plot_kan_splines
+
+plot_kan_splines(
+    cae.hybrid.kan_branch,            # the KAN inside the fused model, not cae.mlp
+    X_train,                          # the same scaled features the model sees
+    X_df.columns.tolist(),
+    out_path=os.path.join("/home/gkianfar/scratch/Amin/Sedo/output/kan_interp", file_name, "kan_splines"),
+    top_k=6,
+    device=DEVICE,
+)
 ################################################################
 # AUTOMATIC # OF WINS TRACKER - ADD AFTER TRAINING
 print("\n" + "="*60)
