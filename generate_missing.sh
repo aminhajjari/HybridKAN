@@ -28,7 +28,7 @@ INPUT_DIR="/home/gkianfar/scratch/Amin/ICC/Unzippeddata/CSV"
 
 # New datasets are written here, one sub-root per missing rate:
 #   $OUTPUT_ROOT/CSV_mr10/<dataset>/<dataset>.csv
-OUTPUT_ROOT="/home/gkianfar/scratch/Amin/ICC/Unzippeddata"
+OUTPUT_ROOT="/home/gkianfar/scratch/Amin/Sedo/NEWtabular"
 
 JOB_LOGS_DIR="$PROJECT_DIR/Sedo/output/logs"
 
