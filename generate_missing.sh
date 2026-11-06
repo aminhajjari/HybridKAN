@@ -11,7 +11,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 
 #SBATCH --output=/home/gkianfar/scratch/Amin/Sedo/output/logs/genmissing_%A.out
 #SBATCH --error=/home/gkianfar/scratch/Amin/Sedo/output/logs/genmissing_%A.err
